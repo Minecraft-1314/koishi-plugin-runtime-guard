@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-runtime-guard",
   "description": "Koishi 运行时健壮性与性能守护插件，修复消息队列悬挂、数据观察崩链、数据库写入丢失、控制台消息未校验、插件安装无回撤、权限重复匹配六类缺陷",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -12,6 +12,7 @@
     "build": "tsc",
     "dev": "tsc -w",
     "clean": "rimraf lib",
+    "test": "node --test test/",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -42,15 +43,11 @@
   "peerDependencies": {
     "@koishijs/plugin-console": "*",
     "@koishijs/plugin-market": "*",
-    "koishi-plugin-market-next": "*",
     "@koishijs/plugin-notifier": "*",
     "koishi": "^4.18.0"
   },
   "peerDependenciesMeta": {
     "@koishijs/plugin-console": {
-      "optional": true
-    },
-    "koishi-plugin-market-next": {
       "optional": true
     },
     "@koishijs/plugin-notifier": {

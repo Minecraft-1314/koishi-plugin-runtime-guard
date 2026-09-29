@@ -20,8 +20,14 @@ interface ConsoleSocket {
 interface ConsoleClient {
   id: string
   socket: ConsoleSocket
+  send?(payload: unknown): void
   receive(event: any): Promise<unknown>
 }
+
+// "console/connection" is declared by @koishijs/console's module augmentation,
+// which is only present when that plugin is installed. Subscribe through a
+// local signature so the guard builds and loads with or without it.
+type ConnectionListener = (name: 'console/connection', listener: (client: unknown) => void) => () => void
 
 interface NotifierService {
   actions: Record<string, () => void>
@@ -30,6 +36,7 @@ interface NotifierService {
 export default function createConsoleGuard(ctx: Context, config: ConsoleConfig, log: GuardLog): GuardResult {
   const restore: Array<() => void> = []
   const guarded = new WeakSet<object>()
+  const tracked = new Map<ConsoleClient, () => void>()
 
   const wantsNotifier = config.guardNotifier
   let consoleWaiting = true
@@ -38,7 +45,11 @@ export default function createConsoleGuard(ctx: Context, config: ConsoleConfig, 
   let notifierAttached = false
 
   const settle = (): GuardStatus => {
-    if (consoleAttached || notifierAttached) return 'active'
+    // Only claim "active" once every requested part is attached, otherwise the
+    // startup summary would claim console payloads are validated when they are not.
+    const wanted = wantsNotifier ? 2 : 1
+    const attached = (consoleAttached ? 1 : 0) + (notifierAttached ? 1 : 0)
+    if (attached === wanted) return 'active'
     if (consoleWaiting || notifierWaiting) return 'pending'
     return 'skipped'
   }
@@ -106,12 +117,16 @@ export default function createConsoleGuard(ctx: Context, config: ConsoleConfig, 
       return
     }
 
-    const listen = service.on.bind(service) as unknown as (name: string, listener: (client: unknown) => void) => unknown
-    restore.push(toDisposer(listen('console/connection', (client) => {
-      guardClient(client as ConsoleClient, config, guarded, restore, log)
-    })))
-    consoleAttached = true
-    log.debug('console payloads will be validated before dispatch')
+    try {
+      const listen = ctx.on as unknown as ConnectionListener
+      restore.push(toDisposer(listen.call(ctx, 'console/connection', (client) => {
+        guardClient(client as ConsoleClient, config, guarded, tracked, log)
+      })))
+      consoleAttached = true
+      log.debug('console payloads will be validated before dispatch')
+    } catch (error) {
+      log.error('failed to subscribe to console connections: %s', describe(error))
+    }
   }))
   restore.unshift(disposeClient)
 
@@ -123,6 +138,8 @@ export default function createConsoleGuard(ctx: Context, config: ConsoleConfig, 
       return reason()
     },
     dispose() {
+      for (const release of [...tracked.values()]) release()
+      tracked.clear()
       for (const fn of [...restore].reverse()) {
         if (typeof fn === 'function') fn()
       }
@@ -135,7 +152,7 @@ function guardClient(
   client: ConsoleClient,
   config: ConsoleConfig,
   guarded: WeakSet<object>,
-  restore: Array<() => void>,
+  tracked: Map<ConsoleClient, () => void>,
   log: GuardLog,
 ): boolean {
   if (!client?.socket || guarded.has(client)) return false
@@ -151,8 +168,9 @@ function guardClient(
       return
     }
 
-    if (raw.length > config.maxPayloadSize) {
-      log.debug('rejected an oversized console payload (%d bytes)', raw.length)
+    const size = Buffer.byteLength(raw)
+    if (size > config.maxPayloadSize) {
+      log.debug('rejected an oversized console payload (%d bytes)', size)
       return
     }
 
@@ -186,13 +204,27 @@ function guardClient(
     return false
   }
 
-  restore.push(() => {
+    let released = false
+    const release = () => {
+      if (released) return
+      released = true
+      tracked.delete(client)
     try {
       client.socket.removeEventListener('message', wrapped)
       client.socket.addEventListener('message', original)
-    } catch {}
+        client.socket.removeEventListener('close', release)
+      } catch (error) {
+        log.debug('failed to restore the console message listener: %s', describe(error))
+      }
     client.receive = original
-  })
+    }
+
+    tracked.set(client, release)
+    try {
+      client.socket.addEventListener('close', release)
+    } catch (error) {
+      log.debug('failed to watch the console socket lifetime: %s', describe(error))
+    }
 
   return true
 }

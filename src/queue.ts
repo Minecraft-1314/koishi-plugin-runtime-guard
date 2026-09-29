@@ -49,10 +49,12 @@ export default function createQueueGuard(ctx: Context, config: QueueConfig, log:
 
   if (config.sequential) {
     patchMethod(proto, '_next', () => function (this: QueueSession) {
+      // Whatever timer woke us has already fired, so its handle must not be
+      // left behind: sendQueued treats a truthy _queuedTimeout as "scheduled".
+      this._queuedTimeout = null
       const marked = this as unknown as Record<symbol, unknown>
       if (marked[DRAINING]) return
       marked[DRAINING] = true
-      this._queuedTimeout = DRAINING
       void drain.call(this)
     }, restore)
   } else {
@@ -76,8 +78,10 @@ export default function createQueueGuard(ctx: Context, config: QueueConfig, log:
       }
     } finally {
       marked[DRAINING] = false
-      if (this._queuedTimeout === DRAINING) this._queuedTimeout = null
-      if (this._queuedTasks?.length && !this._queuedTimeout) (this as any)._next()
+      // Clear unconditionally. Leaving a stale handle here is what made
+      // sendQueued stop scheduling and hang the queue forever.
+      this._queuedTimeout = null
+      if (this._queuedTasks?.length) (this as any)._next()
     }
   }
 

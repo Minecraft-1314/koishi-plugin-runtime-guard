@@ -31,16 +31,11 @@ npm i koishi-plugin-runtime-guard
 # 3. 在 koishi.yml 中启用，无需任何配置，全部修复项默认开启
 ```
 
-```yaml
-plugins:
-  runtime-guard: {}
-```
-
 启用后启动 Koishi，日志出现下列内容即表示守护已注册：
 
 ```text
-[I] guard active: queue, observe, flush, permission
-[I] guard waiting for optional services: console, installer
+[I] runtime-guard active: queue, observe, permission
+[I] runtime-guard waiting for optional plugins: flush, console, installer
 ```
 
 ### 依赖声明
@@ -49,10 +44,10 @@ plugins:
 |------|----------|------------------|-----------|
 | `queue` | 无（`koishi` 核心） | `ctx.koishi.session` | 跳过 |
 | `observe` | 无（`koishi` 核心） | `ctx.koishi.session` | 跳过 |
-| `permission` | 无 | `Permissions` | 始终生效 |
+| `permission` | 无 | `Permissions` | 跳过 |
 | `flush` | 任一 `@koishijs/plugin-database-*` | `database` 写入方法 | 等待，插件加载后生效 |
 | `console` | `@koishijs/plugin-console`、`@koishijs/plugin-notifier` | `console` 连接、`notifier` 动作表 | 等待，插件加载后生效 |
-| `installer` | `@koishijs/plugin-market` 或 `koishi-plugin-market-next` | `installer` 安装器 | 等待，插件加载后生效 |
+| `installer` | `@koishijs/plugin-market` | `installer` 安装器 | 等待，插件加载后生效 |
 
 ## 配置项说明
 
@@ -72,20 +67,16 @@ plugins:
 
 默认关闭。开启 `debug` 后，除启动汇总外还会输出每个守护实际替换的方法、被跳过的具体原因，以及数据库写入重试过程。排查「某个守护到底有没有生效」时使用。
 
-```yaml
-plugins:
-  runtime-guard:
-    debug: true
-```
-
 ```text
-[I] guard:queue patched KoishiSession.cancelQueued and KoishiSession._next
-[I] guard:observe patched 2 session observation method(s)
-[I] guard:permission patched Permissions.check with per-entry match memoization
-[I] guard:flush patched 2 database write method(s)
-[I] guard active: queue, observe, flush, permission
-[I] guard waiting for optional services: console, installer
-[I] guard:installer: waiting for service "installer"
+[I] runtime-guard:queue patched KoishiSession.cancelQueued and KoishiSession._next
+[I] runtime-guard:observe patched 2 session observation method(s)
+[I] runtime-guard:flush patched 2 database write method(s)
+[I] runtime-guard:console notifier actions are validated and rate limited
+[I] runtime-guard:console console payloads will be validated before dispatch
+[I] runtime-guard:permission patched Permissions.check with per-entry match memoization
+[I] runtime-guard active: queue, observe, flush, console, permission
+[I] runtime-guard waiting for optional plugins: installer
+[I] runtime-guard installer: waiting for plugin "@koishijs/plugin-market" (provides service "installer")
 ```
 
 ### 数据库写入
@@ -103,17 +94,17 @@ plugins:
 |--------|------|--------|------|
 | `console.enabled` | `boolean` | `true` | 控制台守护总开关 |
 | `console.guardNotifier` | `boolean` | `true` | 为通知按钮加存在性检查、异常吸收与限流 |
-| `console.notifierRateLimit` | `number` | `10` | 单个按钮在窗口期内的最大点击次数 |
+| `console.notifierRateLimit` | `number` | `10` | 单个按钮在窗口期内的最大点击次数，最小 `1`（设为 `0` 会屏蔽全部按钮） |
 | `console.notifierRateWindow` | `ms` | `10000` | 限流窗口 |
-| `console.maxPayloadSize` | `number` | `65536` | 单条控制台消息字节上限，超出直接拒绝 |
+| `console.maxPayloadSize` | `number` | `65536` | 单条控制台消息字节上限，超出直接拒绝，最小 `1`（设为 `0` 会拒绝全部消息） |
 
 ### 插件安装
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `installer.enabled` | `boolean` | `true` | 插件安装守护总开关 |
-| `installer.timeout` | `ms` | `300000` | 等待包管理器退出的最长时间 |
-| `installer.rollback` | `boolean` | `true` | 安装失败时把 `package.json` 逐字节还原为安装前快照 |
+| `installer.timeout` | `ms` | `300000` | 等待包管理器退出的最长时间，最小 `1`（设为 `0` 会让每次安装立即超时） |
+| `installer.rollback` | `boolean` | `true` | 安装失败（含抛异常）时把 `package.json` 逐字节还原为安装前快照；等待超时时跳过回滚，因为包管理器可能仍在写该文件 |
 
 ### 性能与限制
 

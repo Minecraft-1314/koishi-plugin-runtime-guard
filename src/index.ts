@@ -1,15 +1,23 @@
-import { Context, Logger, Schema, Time } from 'koishi'
+import { Context, Schema, Time } from 'koishi'
 import createConsoleGuard, { ConsoleConfig } from './console'
 import createFlushGuard, { FlushConfig } from './flush'
 import createInstallerGuard, { InstallerConfig } from './installer'
-import { createGuardLog, GuardFactory, GuardResult } from './log'
+import { createGuardLog, GuardFactory, GuardLog, GuardResult, LOG_KEY } from './log'
 import createObserveGuard, { ObserveConfig } from './observe'
 import createPermissionGuard, { PermissionConfig } from './permission'
 import createQueueGuard, { QueueConfig } from './queue'
 
-const logger = new Logger('guard')
-
 const REPORT_DELAY = 1000
+const MIN_POSITIVE = 1
+
+// A non-positive value in these fields would silently disable the feature it
+// belongs to (every payload rejected, every notifier button blocked, every
+// install reported as timed out). Clamping to 1 would not help, so an invalid
+// value falls back to the default instead.
+const MINIMUMS: Partial<Record<keyof Omit<Config, 'debug'>, string[]>> = {
+  console: ['notifierRateLimit', 'maxPayloadSize'],
+  installer: ['timeout'],
+}
 
 export interface Config {
   debug: boolean
@@ -59,13 +67,13 @@ export const Config: Schema<Config> = Schema.object({
   console: Schema.object({
     enabled: Schema.boolean().default(true).description('控制台守护总开关。'),
     guardNotifier: Schema.boolean().default(true).description('是否为通知按钮加上存在性检查、异常吸收与限流（依赖 notifier 服务）。'),
-    notifierRateLimit: Schema.natural().default(10).description('单个通知按钮在窗口期内允许的最大点击次数。'),
+    notifierRateLimit: Schema.natural().min(MIN_POSITIVE).default(10).description('单个通知按钮在窗口期内允许的最大点击次数。设为 0 会屏蔽全部按钮，故最小值为 1。'),
     notifierRateWindow: Schema.natural().role('ms').default(Time.second * 10).description('通知按钮限流窗口。'),
-    maxPayloadSize: Schema.natural().default(65536).description('单条控制台消息的字节上限，超出直接拒绝。'),
+    maxPayloadSize: Schema.natural().min(MIN_POSITIVE).default(65536).description('单条控制台消息的字节上限，超出直接拒绝。设为 0 会拒绝全部消息，故最小值为 1。'),
   }).description('控制台守护（依赖 console / notifier 服务）'),
   installer: Schema.object({
     enabled: Schema.boolean().default(true).description('插件安装守护总开关。'),
-    timeout: Schema.natural().role('ms').default(Time.minute * 5).description('等待包管理器退出的最长时间。'),
+    timeout: Schema.natural().min(MIN_POSITIVE).role('ms').default(Time.minute * 5).description('等待包管理器退出的最长时间。设为 0 会让每次安装都立即超时，故最小值为 1。'),
     rollback: Schema.boolean().default(true).description('安装失败时把 package.json 还原为安装前的快照。'),
   }).description('插件安装守护（依赖 market 的 installer 服务）'),
   permission: Schema.object({
@@ -76,12 +84,13 @@ export const Config: Schema<Config> = Schema.object({
 })
 
 export function apply(ctx: Context, config: Partial<Config> = {}): () => void {
+  const logger = ctx.logger(LOG_KEY)
   const debug = config.debug ?? DEFAULTS.debug
   const results: Array<[string, GuardResult]> = []
 
   for (const [name, create] of GUARDS) {
-    const section = Object.assign({}, DEFAULTS[name], config[name])
-    const log = createGuardLog(name, debug)
+    const section = clampSection(logger, name, Object.assign({}, DEFAULTS[name], config[name]))
+    const log = createGuardLog(ctx, name, debug)
 
     if (section.enabled === false) {
       log.debug('skipped: disabled by config')
@@ -127,6 +136,22 @@ export function apply(ctx: Context, config: Partial<Config> = {}): () => void {
     }
     logger.info('all guards disposed')
   }
+}
+
+function clampSection<T>(logger: GuardLog, name: keyof Omit<Config, 'debug'>, section: T): T {
+  const keys = MINIMUMS[name]
+  if (!keys) return section
+  const target = section as Record<string, unknown>
+  const defaults = DEFAULTS[name] as unknown as Record<string, unknown>
+  for (const key of keys) {
+    const value = target[key]
+    if (typeof value === 'number' && !(value >= MIN_POSITIVE)) {
+      const fallback = defaults[key]
+      logger.warn('%s.%s must be at least %d, got %s; falling back to %s', name, key, MIN_POSITIVE, String(value), String(fallback))
+      target[key] = fallback
+    }
+  }
+  return section
 }
 
 function describe(error: unknown): string {

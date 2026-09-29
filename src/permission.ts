@@ -3,6 +3,7 @@ import { GuardLog, GuardResult } from './log'
 import { clearInstalled, isInstalled, markInstalled, patchMethod } from './patch'
 
 const INSTALLED = Symbol.for('koishi.guard.permission.installed')
+const PRUNE_SLACK = 32
 
 export interface PermissionConfig {
   enabled: boolean
@@ -29,10 +30,16 @@ export default function createPermissionGuard(
   }
 
   const restore: Array<() => void> = []
-  const memoized = new WeakSet<object>()
+  const memoized = new Map<Permissions.Entry, Permissions.Entry['match']>()
+  // Permissions.prototype is patched globally, so a process may hold more than
+  // one instance. Pruning must consider every store we have seen, otherwise it
+  // would restore entries that merely belong to another instance.
+  const stores = new Set<Permissions>()
 
   const ok = patchMethod(proto, 'check', (original) => function (this: Permissions, ...args: unknown[]) {
-    for (const entry of this.store) memoizeEntry(entry, config, memoized, restore)
+    stores.add(this)
+    for (const entry of this.store) memoizeEntry(entry, config, memoized)
+    pruneEntries(stores, memoized)
     return original.apply(this, args)
   }, restore)
 
@@ -47,6 +54,9 @@ export default function createPermissionGuard(
     status: 'active',
     dispose() {
       for (const fn of [...restore].reverse()) fn()
+      for (const [entry, original] of memoized) entry.match = original
+      memoized.clear()
+      stores.clear()
       clearInstalled(proto, INSTALLED)
       log.debug('permission guard disposed')
     },
@@ -56,8 +66,7 @@ export default function createPermissionGuard(
 function memoizeEntry(
   entry: Permissions.Entry,
   config: PermissionConfig,
-  memoized: WeakSet<object>,
-  restore: Array<() => void>,
+  memoized: Map<Permissions.Entry, Permissions.Entry['match']>,
 ): void {
   if (memoized.has(entry)) return
   if (typeof entry.match !== 'function') return
@@ -66,15 +75,34 @@ function memoizeEntry(
   const cache = new Map<string, unknown>()
 
   entry.match = ((value: string) => {
+    if (config.matchCacheSize <= 0) return original(value)
     if (cache.size >= config.matchCacheSize) cache.clear()
-    if (cache.has(value)) return cache.get(value)
-    const result = original(value)
-    cache.set(value, result)
-    return result
+    if (!cache.has(value)) cache.set(value, original(value))
+    // Hand out a copy: check() receives this object and a plugin may mutate
+    // it, which would otherwise poison every later cache hit.
+    const cached = cache.get(value)
+    return cached && typeof cached === 'object' ? { ...cached } : cached
   }) as Permissions.Entry['match']
 
-  memoized.add(entry)
-  restore.push(() => {
-    if (entry.match !== original) entry.match = original
-  })
+  memoized.set(entry, original)
+}
+
+function pruneEntries(
+  stores: Set<Permissions>,
+  memoized: Map<Permissions.Entry, Permissions.Entry['match']>,
+): void {
+  let total = 0
+  const live = new Set<Permissions.Entry>()
+  for (const store of stores) {
+    for (const entry of store.store) {
+      live.add(entry)
+      total++
+    }
+  }
+  if (memoized.size <= total + PRUNE_SLACK) return
+  for (const [entry, original] of memoized) {
+    if (live.has(entry)) continue
+    entry.match = original
+    memoized.delete(entry)
+  }
 }

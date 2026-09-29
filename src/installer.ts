@@ -15,16 +15,17 @@ export interface InstallerConfig {
 
 interface InstallerService {
   cwd: string
-  install(deps: Record<string, string>, forced?: boolean): Promise<number>
+  install(...args: unknown[]): Promise<number>
   exec(args: string[]): Promise<number>
 }
 
 export default function createInstallerGuard(ctx: Context, config: InstallerConfig, log: GuardLog): GuardResult {
   const restore: Array<() => void> = []
-  const timers = new Set<ReturnType<typeof setTimeout>>()
+  const pending = new Set<() => void>()
   let target: object | null = null
   let installed = false
-  let locked = false
+  let timedOut = false
+  let disposed = false
   let status: GuardStatus = 'pending'
   let reason = `waiting for ${describeRequirement('installer')}`
 
@@ -51,25 +52,39 @@ export default function createInstallerGuard(ctx: Context, config: InstallerConf
     target = service
 
     patchMethod(proto, 'exec', (original) => function (this: InstallerService, ...args: unknown[]) {
-      return withTimeout(original, this, args as unknown[][], config, timers, log)
+      // After dispose the prototype is restored, so a late call would bypass
+      // the timeout entirely and could block the caller indefinitely.
+      if (disposed) {
+        log.warn('ignored an exec request because the guard is being disposed')
+        return Promise.resolve(-1)
+      }
+      return withTimeout(original, this, args, config, pending, log, () => {
+        timedOut = true
+      })
     }, restore)
 
-    patchMethod(proto, 'install', (original) => async function (this: InstallerService, deps: Record<string, string>, forced?: boolean) {
-      if (locked) {
-        log.warn('rejected a concurrent install request, another one is still running')
+    patchMethod(proto, 'install', (original) => async function (this: InstallerService, ...args: unknown[]) {
+      if (disposed) {
+        log.warn('ignored an install request because the guard is being disposed')
         return -1
       }
-
-      locked = true
+      // Upstream already serialises installs through its own lock, so a second
+      // request queues rather than being rejected here. Forward every argument
+      // so callbacks such as beforeReload still run.
+      const filename = resolveManifest(this, log)
+      const backup = config.rollback && filename ? await snapshot(filename, log) : null
+      if (disposed) return -1
+      timedOut = false
       try {
-        const filename = resolve(this.cwd, 'package.json')
-        const backup = config.rollback ? await snapshot(filename, log) : null
-        const code = await original.call(this, deps, forced)
+        const code = await original.apply(this, args)
         if (code === 0) return code
-        await reportFailure(filename, backup, code, log)
+        await reportFailure(filename, backup, `code ${code}`, timedOut, log)
         return code
+      } catch (error) {
+        await reportFailure(filename, backup, describe(error), timedOut, log)
+        throw error
       } finally {
-        locked = false
+        timedOut = false
       }
     }, restore)
 
@@ -88,8 +103,11 @@ export default function createInstallerGuard(ctx: Context, config: InstallerConf
       return reason
     },
     dispose() {
-      for (const timer of timers) clearTimeout(timer)
-      timers.clear()
+      disposed = true
+      // Release in-flight waits, otherwise a pending install or exec would
+      // stay suspended on a promise that can never settle.
+      for (const cancel of [...pending]) cancel()
+      pending.clear()
       disposeInject()
       for (const fn of [...restore].reverse()) fn()
       if (installed && target) clearInstalled(protoOf(target), INSTALLED)
@@ -107,59 +125,91 @@ async function snapshot(filename: string, log: GuardLog): Promise<string | null>
   }
 }
 
-async function reportFailure(filename: string, backup: string | null, code: number, log: GuardLog): Promise<void> {
-  if (backup === null) {
-    log.error('install failed with code %s, package.json may be left in a broken state', code)
+function resolveManifest(service: InstallerService, log: GuardLog): string | null {
+  if (typeof service?.cwd !== 'string' || !service.cwd) {
+    log.warn('installer service exposes no working directory, rollback is disabled')
+    return null
+  }
+  return resolve(service.cwd, 'package.json')
+}
+
+async function reportFailure(
+  filename: string | null,
+  backup: string | null,
+  reason: string,
+  timedOut: boolean,
+  log: GuardLog,
+): Promise<void> {
+  if (timedOut) {
+    log.error(
+      'install did not finish in time (%s); the package manager may still be writing package.json, so rollback was skipped',
+      reason,
+    )
+    return
+  }
+  if (filename === null || backup === null) {
+    log.error('install failed (%s), package.json may be left in a broken state', reason)
     return
   }
   try {
     await fsp.writeFile(filename, backup)
-    log.error('install failed with code %s, package.json has been restored', code)
+    log.error('install failed (%s), package.json has been restored', reason)
   } catch (error) {
-    log.error('install failed with code %s and package.json could not be restored: %s', code, describe(error))
+    log.error('install failed (%s) and package.json could not be restored: %s', reason, describe(error))
   }
 }
 
 function withTimeout(
   run: (...args: unknown[]) => unknown,
   receiver: InstallerService,
-  args: unknown[][],
+  args: unknown[],
   config: InstallerConfig,
-  timers: Set<ReturnType<typeof setTimeout>>,
+  pending: Set<() => void>,
   log: GuardLog,
+  onTimeout: () => void,
 ): Promise<number> {
   return new Promise((resolve, reject) => {
     let settled = false
 
-    const timer = setTimeout(() => {
-      timers.delete(timer)
+    const finish = (handler: (value: any) => void) => (value: any) => {
       if (settled) return
       settled = true
+      clearTimeout(timer)
+      pending.delete(cancel)
+      handler(value)
+    }
+
+    const cancel = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      pending.delete(cancel)
+      log.warn('stopped waiting for the package manager because the guard is being disposed')
+      resolve(-1)
+    }
+
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      pending.delete(cancel)
+      onTimeout()
       log.error(
         'the package manager did not finish within %d ms, stopped waiting; the child process may still be running',
         config.timeout,
       )
       resolve(-1)
     }, config.timeout)
-    timers.add(timer)
+    pending.add(cancel)
 
-    const finish = (handler: (value: any) => void) => (value: any) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      timers.delete(timer)
-      handler(value)
-    }
-
-    let pending: unknown
+    let result: unknown
     try {
-      pending = run.apply(receiver, args)
+      result = run.apply(receiver, args)
     } catch (error) {
       finish(reject)(error)
       return
     }
 
-    Promise.resolve(pending).then(finish(resolve), finish(reject))
+    Promise.resolve(result).then(finish(resolve), finish(reject))
   })
 }
 

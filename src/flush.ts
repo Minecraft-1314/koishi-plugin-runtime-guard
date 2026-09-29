@@ -1,5 +1,5 @@
 import { Context } from 'koishi'
-import { GuardLog, GuardResult, GuardStatus, skipped } from './log'
+import { GuardLog, GuardResult, GuardStatus } from './log'
 import { clearInstalled, isInstalled, markInstalled, patchMethod, protoOf, toDisposer } from './patch'
 import { describeRequirement } from './requirements'
 
@@ -15,11 +15,13 @@ export interface FlushConfig {
 
 export default function createFlushGuard(ctx: Context, config: FlushConfig, log: GuardLog): GuardResult {
   const restore: Array<() => void> = []
-  const timers = new Set<ReturnType<typeof setTimeout>>()
+  const pending = new Set<() => void>()
   let target: object | null = null
   let installed = false
+  let disposed = false
   let status: GuardStatus = 'pending'
   let reason = `waiting for ${describeRequirement('flush')}`
+  const state: FlushState = { pending, isDisposed: () => disposed }
 
   const disposeInject = toDisposer(ctx.inject({ database: { required: true } }, () => {
     const service = ctx.get('koishi')?.database as object | undefined
@@ -41,7 +43,7 @@ export default function createFlushGuard(ctx: Context, config: FlushConfig, log:
 
     for (const name of TARGETS) {
       const ok = patchMethod(proto, name, (original) => function (this: unknown, ...args: unknown[]) {
-        return runWithRetry(timers, name, () => original.apply(this, args), config, log)
+        return runWithRetry(state, name, () => original.apply(this, args), config, log)
       }, restore)
       if (ok) patched++
     }
@@ -67,8 +69,12 @@ export default function createFlushGuard(ctx: Context, config: FlushConfig, log:
       return reason
     },
     dispose() {
-      for (const timer of timers) clearTimeout(timer)
-      timers.clear()
+      disposed = true
+      // Release any in-flight backoff wait, otherwise runWithRetry would stay
+      // suspended on a promise that can never settle. The disposed flag stops
+      // the loop from arming another wait on the way out.
+      for (const resume of [...pending]) resume()
+      pending.clear()
       disposeInject()
       for (const fn of [...restore].reverse()) fn()
       if (installed && target) clearInstalled(protoOf(target), INSTALLED)
@@ -77,8 +83,13 @@ export default function createFlushGuard(ctx: Context, config: FlushConfig, log:
   }
 }
 
+interface FlushState {
+  pending: Set<() => void>
+  isDisposed(): boolean
+}
+
 async function runWithRetry(
-  timers: Set<ReturnType<typeof setTimeout>>,
+  state: FlushState,
   name: string,
   run: () => unknown,
   config: FlushConfig,
@@ -91,11 +102,14 @@ async function runWithRetry(
     } catch (error) {
       lastError = error
       if (attempt >= config.retries) break
+      if (state.isDisposed()) break
       log.debug('%s failed (attempt %d/%d), retrying', name, attempt + 1, config.retries + 1)
-      await wait(timers, config.retryDelay * (attempt + 1))
+      await wait(state.pending, config.retryDelay * (attempt + 1))
+      if (state.isDisposed()) break
     }
   }
 
+  if (state.isDisposed()) return
   if (config.throwOnFailure) throw lastError
   log.error(
     '%s failed after %d attempt(s), the pending change was dropped: %s',
@@ -105,14 +119,16 @@ async function runWithRetry(
   )
 }
 
-function wait(timers: Set<ReturnType<typeof setTimeout>>, ms: number): Promise<void> {
+function wait(pending: Set<() => void>, ms: number): Promise<void> {
   if (!(ms > 0)) return Promise.resolve()
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      timers.delete(timer)
+    const resume = () => {
+      clearTimeout(timer)
+      pending.delete(resume)
       resolve()
-    }, ms)
-    timers.add(timer)
+    }
+    const timer = setTimeout(resume, ms)
+    pending.add(resume)
   })
 }
 
