@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-runtime-guard",
   "description": "Koishi 运行时健壮性与性能守护插件，修复消息队列悬挂、数据观察崩链、数据库写入丢失、控制台消息未校验、插件安装无回撤、权限重复匹配六类缺陷",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -11,7 +11,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc -w",
-    "clean": "rimraf lib"
+    "clean": "rimraf lib",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "chatbot",
@@ -38,17 +39,18 @@
     "rimraf": "^5.0.5",
     "typescript": "^5.3.3"
   },
-  "dependencies": {
-    "koishi-plugin-runtime-guard": "file:"
-  },
   "peerDependencies": {
     "@koishijs/plugin-console": "*",
     "@koishijs/plugin-market": "*",
+    "koishi-plugin-market-next": "*",
     "@koishijs/plugin-notifier": "*",
     "koishi": "^4.18.0"
   },
   "peerDependenciesMeta": {
     "@koishijs/plugin-console": {
+      "optional": true
+    },
+    "koishi-plugin-market-next": {
       "optional": true
     },
     "@koishijs/plugin-notifier": {
@@ -73,6 +75,14 @@
     "description": {
       "en": "Runtime hardening and performance guards for Koishi 4",
       "zh": "Koishi 4 运行时健壮性与性能守护"
+    },
+    "service": {
+      "optional": [
+        "database",
+        "console",
+        "notifier",
+        "installer"
+      ]
     }
   }
 }

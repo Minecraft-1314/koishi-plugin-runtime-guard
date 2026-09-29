@@ -45,28 +45,6 @@ plugins:
 
 ### 依赖声明
 
-依赖按**插件**声明，而不是按服务。服务名是无主的共享命名空间——任何插件都可以注册一个叫 `console` 或 `installer` 的服务，声明服务等于没说清依赖谁。
-
-```json
-"peerDependencies": {
-  "koishi": "^4.18.0",
-  "@koishijs/plugin-console": "*",
-  "@koishijs/plugin-notifier": "*",
-  "@koishijs/plugin-market": "*"
-},
-"peerDependenciesMeta": {
-  "@koishijs/plugin-console": { "optional": true },
-  "@koishijs/plugin-notifier": { "optional": true },
-  "@koishijs/plugin-market": { "optional": true }
-}
-```
-
-全部标为 `optional`，因此本插件**零必装依赖**，不装任何一个也能正常运行，只是对应守护不生效。
-
-`flush` 守护所需的数据库驱动有 5 个候选（`@koishijs/plugin-database-memory` / `-sqlite` / `-mysql` / `-mongo` / `-postgres`），npm 的 `peerDependencies` 不支持通配，无法用单个条目表达，因此不写进 manifest，改为运行时探测。
-
-**缺少可选插件时不会报错、不会告警，直接跳过**，插件加载后自动生效。
-
 | 守护 | 依赖插件 | 运行时探测的能力 | 缺失时行为 |
 |------|----------|------------------|-----------|
 | `queue` | 无（`koishi` 核心） | `ctx.koishi.session` | 跳过 |
@@ -74,20 +52,7 @@ plugins:
 | `permission` | 无 | `Permissions` | 始终生效 |
 | `flush` | 任一 `@koishijs/plugin-database-*` | `database` 写入方法 | 等待，插件加载后生效 |
 | `console` | `@koishijs/plugin-console`、`@koishijs/plugin-notifier` | `console` 连接、`notifier` 动作表 | 等待，插件加载后生效 |
-| `installer` | `@koishijs/plugin-market` | `installer` 安装器 | 等待，插件加载后生效 |
-
-## 核心指令
-
-本插件**不注册任何指令**，全部功能通过配置项开关。可在 Koishi 控制台的插件配置页逐项开关，默认全部开启。
-
-| 守护 | 作用 | 对应配置项 |
-|------|------|-----------|
-| `queue` | 修复消息队列 Promise 悬挂与发送乱序 | `queue.enabled` |
-| `observe` | 修复数据观察 diff 冲突导致的链路崩断 | `observe.enabled` |
-| `flush` | 数据库写入重试与错误隔离 | `flush.enabled` |
-| `console` | 控制台消息校验与通知按钮限流 | `console.enabled` |
-| `installer` | 安装串行化、超时与失败回滚 | `installer.enabled` |
-| `permission` | 权限匹配结果缓存 | `permission.enabled` |
+| `installer` | `@koishijs/plugin-market` 或 `koishi-plugin-market-next` | `installer` 安装器 | 等待，插件加载后生效 |
 
 ## 配置项说明
 
@@ -157,6 +122,10 @@ plugins:
 | `permission.enabled` | `boolean` | `true` | 权限性能守护总开关 |
 | `permission.memoizeMatch` | `boolean` | `true` | 缓存权限模式匹配结果 |
 | `permission.matchCacheSize` | `number` | `1024` | 单条目匹配缓存上限，满则整体清空 |
+
+### 启动后只看到部分守护 active
+
+属于正常行为。`flush` / `console` / `installer` 依赖可选插件提供的服务，对应插件加载后会自动激活。开启 `debug` 可在启动日志中看到每项守护的状态与等待原因。
 
 ## 项目贡献者
 

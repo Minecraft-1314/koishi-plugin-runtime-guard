@@ -9,7 +9,7 @@ export const REQUIREMENTS: Record<string, GuardRequirement> = {
   permission: { services: [], providers: [] },
   flush: { services: ['database'], providers: ['@koishijs/plugin-database-*'] },
   console: { services: ['console', 'notifier'], providers: ['@koishijs/plugin-console', '@koishijs/plugin-notifier'] },
-  installer: { services: ['installer'], providers: ['@koishijs/plugin-market'] },
+  installer: { services: ['installer'], providers: ['@koishijs/plugin-market', 'koishi-plugin-market-next'] },
 }
 
 export function describeRequirement(name: string): string {
