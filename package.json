@@ -1,0 +1,78 @@
+{
+  "name": "koishi-plugin-runtime-guard",
+  "description": "Koishi 运行时健壮性与性能守护插件，修复消息队列悬挂、数据观察崩链、数据库写入丢失、控制台消息未校验、插件安装无回撤、权限重复匹配六类缺陷",
+  "version": "0.0.1",
+  "main": "lib/index.js",
+  "typings": "lib/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "clean": "rimraf lib"
+  },
+  "keywords": [
+    "chatbot",
+    "koishi",
+    "plugin",
+    "guard",
+    "hardening",
+    "resilience",
+    "performance",
+    "runtime",
+    "守护",
+    "健壮性",
+    "性能",
+    "回撤",
+    "内存泄漏",
+    "消息队列",
+    "权限"
+  ],
+  "devDependencies": {
+    "@koishijs/plugin-database-memory": "^3.7.0",
+    "@koishijs/plugin-notifier": "^1.2.1",
+    "@types/node": "^20.11.0",
+    "koishi": "^4.18.11",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "koishi-plugin-runtime-guard": "file:"
+  },
+  "peerDependencies": {
+    "@koishijs/plugin-console": "*",
+    "@koishijs/plugin-market": "*",
+    "@koishijs/plugin-notifier": "*",
+    "koishi": "^4.18.0"
+  },
+  "peerDependenciesMeta": {
+    "@koishijs/plugin-console": {
+      "optional": true
+    },
+    "@koishijs/plugin-notifier": {
+      "optional": true
+    },
+    "@koishijs/plugin-market": {
+      "optional": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Minecraft-1314/koishi-plugin-runtime-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Minecraft-1314/koishi-plugin-runtime-guard/issues"
+  },
+  "homepage": "https://github.com/Minecraft-1314/koishi-plugin-runtime-guard#readme",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "koishi": {
+    "description": {
+      "en": "Runtime hardening and performance guards for Koishi 4",
+      "zh": "Koishi 4 运行时健壮性与性能守护"
+    }
+  }
+}
